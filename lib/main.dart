@@ -72,6 +72,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:my_flutter_shared/my_flutter_shared.dart'; // 공유 패키지
+import 'screens/main_scaffold.dart';
 
 // firebase_options.dart는 flutterfire configure 후 자동 생성
 // import 'firebase_options.dart';
@@ -130,13 +132,40 @@ const List<String> kDayLabels = ['월', '화', '수', '목', '금', '토', '일'
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
-  // flutterfire configure 후 아래 주석 해제:
-  // await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // Firebase 초기화
   await Firebase.initializeApp();
 
   // [v15] AdMob 초기화 — Firebase 초기화 직후 호출
   await MobileAds.instance.initialize();
 
+  // ── [수정 2] RevenueCat 초기화 (dart-define 방식 적용) ──
+  const String rcApiKey = String.fromEnvironment(
+    'RC_API_KEY_ANDROID',
+    defaultValue: '',
+  );
+  if (rcApiKey.isNotEmpty) {
+    await RevenueCatService().initialize(rcApiKey);
+  } else {
+    debugPrint('경고: RevenueCat API 키가 설정되지 않았습니다. (--dart-define 확인 필요)');
+  }
+
+  // ── [v1.1 추가] 의존성 주입: 로그아웃 시 API 키도 삭제 ──
+  final googleSignInService = GoogleSignInService(
+    onSignOut: () async {
+      await ApiKeyService().deleteApiKey();
+    },
+  );
+
+  // ── [v1.1 추가] API 키 보안 마이그레이션 리스너 ──
+  FirebaseAuth.instance.authStateChanges().listen((User? user) {
+    if (user != null) {
+      // SharedPreferences에 평문으로 남은 키가 있다면 암호화하여 이전
+      ApiKeyService().migrateFromSharedPreferences();
+    }
+  });
+
+  // 기존 HealthApp 실행 유지
   runApp(const HealthApp());
 }
 
@@ -145,16 +174,27 @@ class HealthApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '헬스 기록',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: AppColors.background,
-        colorScheme: const ColorScheme.dark(
-          primary: AppColors.accent,
-          surface: AppColors.card,
-        ),
+      title: 'FitTracker',
+      theme: ThemeData.dark(),
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          // 로딩 상태
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              body: Center(
+                child: CircularProgressIndicator(color: Colors.cyanAccent),
+              ),
+            );
+          }
+          // 로그인 상태 (데이터가 있으면 메인 탭 화면으로)
+          if (snapshot.hasData && snapshot.data != null) {
+            return const MainScaffold();
+          }
+          // 비로그인 상태 (데이터가 없으면 로그인 화면으로)
+          return const LoginScreen();
+        },
       ),
-      home: const AuthWrapper(),
     );
   }
 }
@@ -1166,36 +1206,6 @@ class _MainScreenState extends State<MainScreen> {
             ],
           ],
         ),
-        // [v13 #4] 로그아웃 버튼 / [v14] 설정 버튼
-        actions: [
-          if (user?.photoURL != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: CircleAvatar(
-                radius: 14,
-                backgroundImage: NetworkImage(user!.photoURL!),
-              ),
-            ),
-          // [v14] 설정 버튼
-          IconButton(
-            icon: const Icon(
-              Icons.settings_rounded,
-              color: AppColors.textSub,
-              size: 22,
-            ),
-            tooltip: '설정',
-            onPressed: _goToSettings,
-          ),
-          IconButton(
-            icon: const Icon(
-              Icons.logout_rounded,
-              color: AppColors.textSub,
-              size: 22,
-            ),
-            tooltip: '로그아웃',
-            onPressed: _onLogoutTapped,
-          ),
-        ],
       ),
 
       // ── [v15] bottomNavigationBar 에 배너 광고 배치 ─────────────
